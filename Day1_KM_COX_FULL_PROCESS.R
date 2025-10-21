@@ -1,8 +1,11 @@
+#你好 王老板2
 
 #使用模拟临床试验数据，对 Treatment vs Control 两组患者的生存时间进行分析：
 # 从数据清洗开始 全流程分析
 
 # 如果曾经下载过packages，就不用重复下载。但是我们不知道哪些下载过。所以用这一串代码。
+
+### 测试 pull and push
 
 required_packages <- c("readr", "dplyr", "tableone", "ggplot2", "survival", "survminer")
 
@@ -17,8 +20,6 @@ for (pkg in required_packages) {
 
 # step 0: read data
 data <- read.csv("data/simulated_clinical_trial_data_dirty.csv")
-
-head(data)
 
 
 #step 1: data cleaning
