@@ -16,7 +16,7 @@ for (pkg in required_packages) {
 
 
 # step 0: read data
-data <- read.csv("data/simulated_clinical_trial_data_dirty.csv")
+data <- read.csv("~/Epi R project/learn-R/data/simulated_clinical_trial_data_dirty.csv")
 
 head(data)
 
@@ -37,7 +37,7 @@ print(table1, showAllLevels = TRUE)
 
 #step3: kaplan-meier 生存曲线
 
-surv_obj <- Surv(time = df$time, event = data$status)
+surv_obj <- Surv(time = data$time, event = data$status)
 fin_km <- survfit(surv_obj ~ treatment_group, data = data)
 
 
