@@ -16,7 +16,7 @@ for (pkg in required_packages) {
 
 
 # step 0: read data
-data <- read.csv("~/Epi R project/learn-R/data/simulated_clinical_trial_data_dirty.csv")
+data <- read.csv("data/simulated_clinical_trial_data_dirty.csv")
 
 head(data)
 
