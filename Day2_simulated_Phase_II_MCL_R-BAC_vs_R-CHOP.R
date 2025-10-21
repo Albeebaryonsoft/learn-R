@@ -287,7 +287,50 @@
   
   table(df_model$treatment, df_model$severe_ae)
   
-    
+  # 若样本较小或有 <5 的格子，使用 Fisher 精确检验
+  fisher.test(table(df_model$treatment, df_model$severe_ae))
+  library(ggplot2)
+  
+  ggplot(df_model, aes(x = treatment, fill = severe_ae)) +
+    geom_bar(position = "fill") +
+    labs(title = "Proportion of Severe Adverse Events by Treatment",
+         y = "Proportion", x = "Treatment") +
+    scale_fill_manual(values = c("skyblue", "tomato"), name = "Grade ≥3 AE")
+  
+  
+  # 5.4 分析MRD区别
+  table(df_model$treatment, df_model$mrd_positive)
+  fisher.test(table(df_model$treatment, df_model$mrd_positive))
+
+  # 5.5 探究mrd对PFS的影响
+  # 创建生存对象
+  surv_obj <- Surv(time = df_model$time, event = df_model$event)
+  
+  # 拟合 KM 曲线（按 mrd_positive 分组）
+  fit_mrd <- survfit(surv_obj ~ mrd_positive, data = df_model)
+  
+  # 绘图
+  ggsurvplot(fit_mrd,
+             data = df_model,
+             pval = TRUE,
+             conf.int = TRUE,
+             risk.table = TRUE,
+             legend.title = "MRD Status",
+             legend.labs = c("Negative", "Positive"),
+             xlab = "Time (months)",
+             ylab = "Progression-Free Survival",
+             title = "KM Curve by MRD Status",
+             palette = c("forestgreen", "firebrick"))
+  
+  install.packages("tableone")
+  library(tableone)
+  vars <- c("age", "ecog", "mrd_positive")
+  group_var <- "treatment"
+  
+  # 创建 Table 1，卡方检验两组各个值是否不同
+  table1 <- CreateTableOne(vars = vars, strata = group_var, data = df_model, factorVars = c("ecog", "mrd_positive"))
+  print(table1, showAllLevels = TRUE, quote = TRUE, noSpaces = TRUE, test = TRUE)
+  
   
   
   
