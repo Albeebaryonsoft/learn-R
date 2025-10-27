@@ -6,7 +6,26 @@ knitr:
     setwd: '..'
 ---
 
-```{r data_prep, include=TRUE}
+```{r prepare-data-for-rr, message=FALSE, warning=FALSE, echo=FALSE, include=FALSE}
+
+# -------------------------------------------------
+# Chunk: prepare-data-for-rr
+# Goal:
+#   Create a clean analysis dataset (data_for_rr)
+#   with only the variables needed for RR, stratified RR,
+#   and interaction analysis.
+#
+#   Keeps: sex, age_grp, smoke, chd
+#   Removes: rows with missing values
+#
+# Output:
+#   data_for_rr (tibble)
+#   - sex: Female / Male
+#   - age_grp: age groups like [0,45), [45,60), [60,+)
+#   - smoke: No / Yes
+#   - chd: No / Yes
+# -------------------------------------------------
+
 knitr::opts_knit$set(root.dir = "..")
 setwd("..")
 
