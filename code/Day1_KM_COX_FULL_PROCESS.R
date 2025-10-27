@@ -4,7 +4,7 @@
 
 # 如果曾经下载过packages，就不用重复下载。但是我们不知道哪些下载过。所以用这一串代码。
 
-### 测试 pull and push
+
 
 required_packages <- c("readr", "dplyr", "tableone", "ggplot2", "survival", "survminer")
 
