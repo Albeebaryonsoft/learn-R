@@ -9,6 +9,7 @@ knitr:
 ```{r data_prep, include=TRUE}
 knitr::opts_knit$set(root.dir = "..")
 setwd("..")
+
 # ===== 安装并加载包 =====
 required_packages <- c("tidyverse", "broom", "epiR", "epitools", "gtsummary", "readr","sandwich","lmtest")
 for (pkg in required_packages) {
@@ -59,17 +60,22 @@ e_overall <- epiR::epi.2by2(tab_overall,
 e_overall
 
 # 提取主要指标
-rr_overall  <- e_overall$massoc$RR.strata.wald[1, c("est","lower","upper")]
-rd_overall  <- e_overall$massoc$AR.strata.wald[1, c("est","lower","upper")]
-or_overall  <- e_overall$massoc$OR.strata.wald[1, c("est","lower","upper")]
+rr_overall <- e_overall$massoc.summary[e_overall$massoc.summary$var == "Inc risk ratio", c("est","lower","upper")]
+or_overall <- e_overall$massoc.summary[e_overall$massoc.summary$var == "Inc odds ratio", c("est","lower","upper")]
+rd_overall <- e_overall$massoc.summary[e_overall$massoc.summary$var == "Attrib inc risk *", c("est","lower","upper")]
 
-print(rr_overall); print(rd_overall); print(or_overall)
+print(rr_overall)
+print(rd_overall)
+print(or_overall)
+
 ```
 
 ```{r stratification:gender and age, include=TRUE}
+
 # ======================
 # 2) 分层：按性别、年龄组
 # ======================
+
 # 2a) 按性别计算分层RR（以及森林图数据）
 calc_rr_by_stratum <- function(df, strata_var){
   df %>%
@@ -78,10 +84,13 @@ calc_rr_by_stratum <- function(df, strata_var){
       tt <- table(.x$smoke, .x$chd)
       e  <- epiR::epi.2by2(tt, method = "cohort.count", conf.level = 0.95,
                            units = 100, outcome = "as.columns")
+       rr_row <- e$massoc.summary[e$massoc.summary$var == "Inc risk ratio",
+                                 c("est","lower","upper")]
+
       tibble(
-        est = e$massoc$RR.strata.wald[1,"est"],
-        lcl = e$massoc$RR.strata.wald[1,"lower"],
-        ucl = e$massoc$RR.strata.wald[1,"upper"],
+        est = rr_row$est,
+        lower = rr_row$lower,
+        upper = rr_row$upper,
         n   = nrow(.x)
       )
     }) %>%
@@ -93,13 +102,14 @@ rr_by_age <- calc_rr_by_stratum(dat1, "age_grp")
 rr_by_sex
 rr_by_age
 
-# 2b) Mantel–Haenszel（以性别为层）：MH 合并 OR（经典做法）
-# 注意：mantelhaen.test 得到的是共同比值比（OR），不是RR
+# 2) Mantel–Haenszel是分层版的卡方检验，体现控制混杂（如性别）的OR，不是RR
+
+# gender stratification. result: gender is not a confounder.
 tab_3d_sex <- xtabs(~ smoke + chd + sex, data = dat1)
 mh_sex <- mantelhaen.test(tab_3d_sex)  # common OR
 mh_sex
 
-# 2c) Mantel–Haenszel（以年龄组为层）
+# age stratification. result: age is a confounder.
 tab_3d_age <- xtabs(~ smoke + chd + age_grp, data = dat1)
 mh_age <- mantelhaen.test(tab_3d_age)
 mh_age
@@ -107,14 +117,21 @@ mh_age
 
 ```{r evaluate confounding, include=TRUE}
 # ======================
-# 3) 混杂评估（以年龄为潜在混杂）：粗略RR vs 分层合并（用log-binomial失败时用Poisson稳健代替）
+# 3) 混杂评估（以年龄为潜在混杂）
+# 粗略RR vs 分层合并，用log-binomial因为不收敛non-convergence，找不到最优模型而失败
+# 用Poisson代替（modified Poisson regression）
+# compare: logistic vs log-binomial vs poisson+robust 
 # ======================
+
 # 3a) 粗略 RR（用Poisson稳健近似风险比）
 library(sandwich); library(lmtest); library(broom)
+
 fit_crude <- glm(as.numeric(chd) - 1 ~ smoke, family = poisson(link="log"), data = dat1)
 vc_crude  <- sandwich::vcovHC(fit_crude, type = "HC0")
 crude_res <- lmtest::coeftest(fit_crude, vcov. = vc_crude) %>% broom::tidy() %>%
+  
   mutate(RR = exp(estimate), lcl = exp(estimate - 1.96*std.error), ucl = exp(estimate + 1.96*std.error))
+
 crude_rr <- crude_res %>% filter(term=="smokeYes") %>% select(RR, lcl, ucl)
 crude_rr
 
@@ -123,18 +140,21 @@ fit_adj <- glm(as.numeric(chd) - 1 ~ smoke + age_grp + diab + hyp, family = pois
 vc_adj  <- sandwich::vcovHC(fit_adj, type = "HC0")
 adj_res <- lmtest::coeftest(fit_adj, vcov. = vc_adj) %>% broom::tidy() %>%
   mutate(RR = exp(estimate), lcl = exp(estimate - 1.96*std.error), ucl = exp(estimate + 1.96*std.error))
+
 adj_rr <- adj_res %>% filter(term=="smokeYes") %>% select(RR, lcl, ucl)
 adj_rr
 
 # 混杂相对变化（%）
 pct_change <- (adj_rr$RR - crude_rr$RR)/crude_rr$RR * 100
-pct_change
+pct_change 
+
+# 27.84% > 10% change compared to crude RR, strong confounding affect the relationship between exposure and outcome. 
 
 ```
 
 ```{r interaction, include=TRUE}
 # ======================
-# 4) 交互（效应修饰）：吸烟*性别（乘性 & 加性）
+# 4) interaction：吸烟*性别（乘性 & 加性）
 # ======================
 
 # 4a) 乘性交互（Poisson + robust SE）
