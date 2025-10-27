@@ -1,19 +1,25 @@
---- 
-
-title: "1.Cohort Study: Risk Measures, Confounding, and Interaction"
+---
+title: "1_Cohort_Study_Risk_Measures_Confounding_and_Interaction"
 output: html_document
+knitr:
+  opts_knit:
+    setwd: '..'
 ---
 
-required_packages <- c("tidyverse", "broom", "epiR", "epitools", "gtsummary","readr")
+```{r data_prep, include=TRUE}
+knitr::opts_knit$set(root.dir = "..")
+setwd("..")
+# ===== 安装并加载包 =====
+required_packages <- c("tidyverse", "broom", "epiR", "epitools", "gtsummary", "readr","sandwich","lmtest")
 for (pkg in required_packages) {
-if (!requireNamespace(pkg, quietly = TRUE)) {
-library(pkg, character.only = TRUE)
-install.packages(pkg)
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg)
+  library(pkg, character.only = TRUE)
 }
-}
+
 dat0 <- readr::read_csv("data/framingham_raw.csv")
 
-#选择具体的列进行清洗
+
+## =====数据清洗：选择具体的列进行清洗===== 
 dat <- dat0 %>%
   mutate(
     smoke   = factor(currentSmoker, levels = c(0,1), labels = c("No","Yes")),
@@ -27,10 +33,14 @@ dat <- dat0 %>%
 
 glimpse(dat)
 
-# 仅保留本分析所需变量的完整观测
+
+# ==== 数据预览：仅保留本分析所需变量的完整观测 ====
 vars_use <- c("smoke","chd","sex","diab","hyp","age_grp","age","sysBP","diaBP","totChol","glucose","education","BPMeds","cigsPerDay","BMI","heartRate")
 dat1 <- dat %>% select(any_of(vars_use)) %>% drop_na(smoke, chd, sex, age_grp)
 
+```
+
+```{r contingency table, include=TRUE}
 # ======================
 # 1) 总体 2x2：吸烟 vs 10年CHD
 # ======================
@@ -38,8 +48,7 @@ tab_overall <- table(dat1$smoke, dat1$chd)
 tab_overall
 
 # 风险、RR、RD、OR（基于计数，适合前瞻性队列）
-# epiR::epi.2by2 期望2x2矩阵
-# 我们把"Yes"对应阳性
+# epiR::epi.2by2 期望2x2矩阵，"Yes"对应阳性
 
 library(epiR)
 e_overall <- epiR::epi.2by2(tab_overall,
@@ -55,7 +64,9 @@ rd_overall  <- e_overall$massoc$AR.strata.wald[1, c("est","lower","upper")]
 or_overall  <- e_overall$massoc$OR.strata.wald[1, c("est","lower","upper")]
 
 print(rr_overall); print(rd_overall); print(or_overall)
+```
 
+```{r stratification:gender and age, include=TRUE}
 # ======================
 # 2) 分层：按性别、年龄组
 # ======================
@@ -92,7 +103,9 @@ mh_sex
 tab_3d_age <- xtabs(~ smoke + chd + age_grp, data = dat1)
 mh_age <- mantelhaen.test(tab_3d_age)
 mh_age
+```
 
+```{r evaluate confounding, include=TRUE}
 # ======================
 # 3) 混杂评估（以年龄为潜在混杂）：粗略RR vs 分层合并（用log-binomial失败时用Poisson稳健代替）
 # ======================
@@ -117,33 +130,69 @@ adj_rr
 pct_change <- (adj_rr$RR - crude_rr$RR)/crude_rr$RR * 100
 pct_change
 
+```
+
+```{r interaction, include=TRUE}
 # ======================
 # 4) 交互（效应修饰）：吸烟*性别（乘性 & 加性）
 # ======================
-# 4a) 乘性交互：在Poisson稳健模型里加入交互项，看交互项是否显著
-fit_int <- glm(as.numeric(chd) - 1 ~ smoke*sex + age_grp + diab + hyp,
-               family = poisson(link="log"), data = dat1)
+
+# 4a) 乘性交互（Poisson + robust SE）
+fit_int <- glm(
+  as.numeric(chd) - 1 ~ smoke * sex + age_grp + diab + hyp,
+  family = poisson(link = "log"),
+  data   = dat1
+)
+
 vc_int  <- sandwich::vcovHC(fit_int, type = "HC0")
-int_res <- lmtest::coeftest(fit_int, vcov. = vc_int) %>% broom::tidy() %>%
-  mutate(RR = exp(estimate), lcl = exp(estimate - 1.96*std.error), ucl = exp(estimate + 1.96*std.error))
-int_res %>% filter(str_detect(term,"smokeYes:sexMale|smokeYes:sexMale"))
+int_res <- lmtest::coeftest(fit_int, vcov. = vc_int) %>%
+  broom::tidy() %>%
+  mutate(
+    RR  = exp(estimate),
+    lcl = exp(estimate - 1.96 * std.error),
+    ucl = exp(estimate + 1.96 * std.error)
+  )
 
-# 4b) 加性交互：RERI / AP / S（基于分层风险）
+# 把交互项（smokeYes:sexMale）提出来（有些版本会把顺序反过来成 sexMale:smokeYes，所以用 str_detect 两个都搜）
+int_interaction_term <- int_res %>%
+  dplyr::filter(stringr::str_detect(term, "smokeYes:sexMale|sexMale:smokeYes"))
+
+int_interaction_term
+
+# 4b) 加性交互（RERI / AP / S）
 risk_cell <- dat1 %>%
-  group_by(sex, smoke) %>%
-  summarise(n = n(), cases = sum(chd=="Yes"), risk = cases/n, .groups="drop") %>%
-  tidyr::pivot_wider(names_from = c(sex, smoke), values_from = risk)
-# 风险命名：R00 = Female,No；R10 = Female,Yes；R01 = Male,No；R11 = Male,Yes
-R00 <- risk_cell$Female_No; R10 <- risk_cell$Female_Yes
-R01 <- risk_cell$Male_No;   R11 <- risk_cell$Male_Yes
+  dplyr::filter(!is.na(sex), !is.na(smoke), !is.na(chd)) %>%      # 关键：清掉 NA，避免多行
+  dplyr::group_by(sex, smoke) %>%
+  dplyr::summarise(
+    n     = dplyr::n(),
+    cases = sum(chd == "Yes"),
+    risk  = cases / n,
+    .groups = "drop"
+  ) %>%
+  tidyr::unite(combo, sex, smoke, sep = "_") %>%                  # combo: Female_No, Female_Yes, ...
+  dplyr::select(combo, risk) %>%
+  tidyr::pivot_wider(names_from = combo, values_from = risk)
 
-RERI <- as.numeric(R11 - R10 - R01 + R00)
-AP   <- as.numeric(RERI / R11)
-S    <- as.numeric((R11 - R00) / ((R10 - R00) + (R01 - R00)))
+# 现在 risk_cell 应该有且只有这4列
+R00 <- as.numeric(risk_cell$Female_No)
+R10 <- as.numeric(risk_cell$Female_Yes)
+R01 <- as.numeric(risk_cell$Male_No)
+R11 <- as.numeric(risk_cell$Male_Yes)
 
-add_int <- tibble(metric=c("RERI","AP","S"), value=c(RERI, AP, S))
+# 计算相加交互指标
+RERI <- R11 - R10 - R01 + R00
+AP   <- RERI / R11
+S    <- (R11 - R00) / ((R10 - R00) + (R01 - R00))
+
+add_int <- tibble::tibble(
+  metric = c("RERI", "AP", "S"),
+  value  = c(RERI,   AP,   S)
+)
+
 add_int
+```
 
+```{r descritive table, include=TRUE}
 # ======================
 # 5) 描述性表：按吸烟分组
 # ======================
@@ -159,49 +208,156 @@ desc_tbl <- dat1 %>%
   modify_header(label ~ "**Variable**") %>%
   bold_labels()
 desc_tbl
+```
 
+```{r rr_tables, include=FALSE}
+# 我们先统一准备一个干净的数据集 data_for_rr
+# 确保这些列存在并且是我们期望的格式
+
+data_for_rr <- dat1 %>%
+  dplyr::transmute(
+    sex    = sex,                        # Female / Male
+    age_grp = age_grp,                   # [0,45) etc.
+    smoke  = smoke,                      # No / Yes
+    chd    = chd                         # No / Yes
+  ) %>%
+  dplyr::filter(
+    !is.na(sex),
+    !is.na(age_grp),
+    !is.na(smoke),
+    !is.na(chd)
+  )
+
+# 性别分层：吸烟 vs CHD 的 RR
+rr_by_sex <- data_for_rr %>%
+  dplyr::group_by(sex) %>%
+  dplyr::group_modify(~{
+    tab <- table(.x$smoke, .x$chd)
+
+    e <- epiR::epi.2by2(
+      tab,
+      method     = "cohort.count",
+      conf.level = 0.95,
+      units      = 100,
+      outcome    = "as.columns"
+    )
+
+    out <- e$massoc$RR.strata.wald[1, c("est", "lower", "upper")]
+
+    tibble::tibble(
+      sex = unique(.x$sex),
+      est = as.numeric(out[["est"]]),
+      lcl = as.numeric(out[["lower"]]),
+      ucl = as.numeric(out[["upper"]])
+    )
+  }) %>%
+  dplyr::ungroup()
+
+# 年龄分层：吸烟 vs CHD 的 RR
+rr_by_age <- data_for_rr %>%
+  dplyr::group_by(age_grp) %>%
+  dplyr::group_modify(~{
+    tab <- table(.x$smoke, .x$chd)
+
+    e <- epiR::epi.2by2(
+      tab,
+      method     = "cohort.count",
+      conf.level = 0.95,
+      units      = 100,
+      outcome    = "as.columns"
+    )
+
+    out <- e$massoc$RR.strata.wald[1, c("est", "lower", "upper")]
+
+    tibble::tibble(
+      age_grp = unique(.x$age_grp),
+      est     = as.numeric(out[["est"]]),
+      lcl     = as.numeric(out[["lower"]]),
+      ucl     = as.numeric(out[["upper"]])
+    )
+  }) %>%
+  dplyr::ungroup()
+```
+
+```{r visualisation_and_output, include=TRUE}
 # ======================
 # 6) 可视化
 # ======================
+
 library(ggplot2)
-# 6a) 吸烟 vs 10年CHD 风险条形图
-p1 <- dat1 %>%
-  group_by(smoke) %>%
-  summarise(risk = mean(chd=="Yes")) %>%
-  ggplot(aes(smoke, risk)) +
+library(dplyr)
+
+# 6a) 吸烟 vs 10年CHD 风险条形图 -----------------
+plot_dat <- dat1 %>%
+  dplyr::group_by(smoke) %>%
+  dplyr::summarise(
+    risk = mean(chd == "Yes"),
+    .groups = "drop"
+  )
+
+# 给柱子上方留空间，但不超过 1
+ymax <- min(1, max(plot_dat$risk) + 0.02)
+
+p1 <- ggplot(plot_dat, aes(x = smoke, y = risk)) +
   geom_col() +
-  geom_text(aes(label = scales::percent(risk, accuracy = 0.1)), vjust = -0.3) +
-  labs(title = "10-year CHD Risk by Smoking", x = NULL, y = "Risk (Incidence Proportion)") +
-  ylim(0, max(0.02 + max(..y..), 1))
+  geom_text(
+    aes(label = scales::percent(risk, accuracy = 0.1)),
+    vjust = -0.3
+  ) +
+  labs(
+    title = "10-year CHD Risk by Smoking",
+    x = NULL,
+    y = "Risk (Incidence Proportion)"
+  ) +
+  ylim(0, ymax)
 
-# 6b) 性别分层 RR 森林图
-p2 <- rr_by_sex %>%
-  ggplot(aes(x = stratum, y = est)) +
+p1
+
+# 6b) 性别分层 RR 森林图 --------------------------
+p2 <- ggplot(rr_by_sex, aes(x = sex, y = est)) +
   geom_point(size = 3) +
   geom_errorbar(aes(ymin = lcl, ymax = ucl), width = 0.1) +
   geom_hline(yintercept = 1, linetype = 2) +
-  labs(title = "Stratum-specific RR (Smoking → CHD) by Sex",
-       x = "Sex", y = "Risk Ratio (95% CI)")
+  labs(
+    title = "Stratum-specific RR (Smoking → CHD) by Sex",
+    x = "Sex",
+    y = "Risk Ratio (95% CI)"
+  ) +
+  coord_flip()
 
-# 6c) 年龄分层 RR 森林图
-p3 <- rr_by_age %>%
-  ggplot(aes(x = stratum, y = est)) +
+p2
+
+# 6c) 年龄分层 RR 森林图 --------------------------
+p3 <- ggplot(rr_by_age, aes(x = age_grp, y = est)) +
   geom_point(size = 3) +
   geom_errorbar(aes(ymin = lcl, ymax = ucl), width = 0.1) +
   geom_hline(yintercept = 1, linetype = 2) +
-  labs(title = "Stratum-specific RR (Smoking → CHD) by Age Group",
-       x = "Age Group", y = "Risk Ratio (95% CI)")
+  labs(
+    title = "Stratum-specific RR (Smoking → CHD) by Age Group",
+    x = "Age Group",
+    y = "Risk Ratio (95% CI)"
+  ) +
+  coord_flip()
 
-# 保存图形与导出结果
-dir.create("outputs", showWarnings = FALSE)
-ggsave("outputs/plot_risk_by_smoke.png", p1, width = 6, height = 4, dpi = 300)
-ggsave("outputs/plot_forest_rr_by_sex.png", p2, width = 6, height = 4, dpi = 300)
-ggsave("outputs/plot_forest_rr_by_age.png", p3, width = 6, height = 4, dpi = 300)
+p3
 
+# 6d) 保存输出 PNG -------------------------------
+# 自动生成唯一的输出路径，例如 learn-R/output/run_2025-10-27_1215
+
+output_dir <- file.path("..", "output", paste0("run_", format(Sys.time(), "%Y-%m-%d_%H%M")))
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+ggsave(file.path(output_dir, "plot_risk_by_smoke.png"),    p1, width = 6, height = 4, dpi = 300)
+ggsave(file.path(output_dir, "plot_forest_rr_by_sex.png"), p2, width = 6, height = 4, dpi = 300)
+ggsave(file.path(output_dir, "plot_forest_rr_by_age.png"), p3, width = 6, height = 4, dpi = 300)
+
+```
+
+```{r final result output, include=TRUE}
 # ======================
 # 7) 导出关键结果
 # ======================
-readr::write_csv(as.data.frame.matrix(tab_overall), "outputs/tab_overall_smoke_chd.csv")
+readr::write_csv(as.data.frame.matrix(tab_overall), "output/tab_overall_smoke_chd.csv")
 readr::write_csv(rr_by_sex, "outputs/rr_by_sex.csv")
 readr::write_csv(rr_by_age, "outputs/rr_by_age.csv")
 
@@ -228,3 +384,4 @@ cat("\n=== Age-adjusted (Poisson robust) RR for smoke ===\n"); print(adj_rr)
 cat(sprintf("\nConfounding %% change (Adj vs Crude RR): %.1f%%\n", pct_change))
 cat("\n=== Additive interaction (Sex x Smoke) ===\n"); print(add_int)
 cat('\n文件与图已导出到 ./outputs/ 目录。\n')
+```
