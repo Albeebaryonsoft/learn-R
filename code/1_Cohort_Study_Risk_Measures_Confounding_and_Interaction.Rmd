@@ -6,7 +6,7 @@ knitr:
     setwd: '..'
 ---
 
-```{r prepare-data-for-rr, message=FALSE, warning=FALSE, echo=FALSE, include=FALSE}
+```{r prepare-data, message=FALSE, warning=FALSE, echo=FALSE, include=FALSE}
 
 # -------------------------------------------------
 # Chunk: prepare-data-for-rr
@@ -29,7 +29,6 @@ knitr:
 knitr::opts_knit$set(root.dir = "..")
 setwd("..")
 
-# ===== 安装并加载包 =====
 required_packages <- c("tidyverse", "broom", "epiR", "epitools", "gtsummary", "readr","sandwich","lmtest")
 to_install <- setdiff(required_packages, rownames(installed.packages()))
 if (length(to_install) > 0) {
@@ -62,16 +61,32 @@ dat1 <- dat %>% select(any_of(vars_use)) %>% drop_na(smoke, chd, sex, age_grp)
 
 ```
 
-```{r contingency table, include=TRUE}
-# ======================
-# 1) 总体 2x2：吸烟 vs 10年CHD
-# ======================
+```{r contingency-table, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# -------------------------------------------------
+# Chunk: contingency-table
+# Goal:
+#   Present the overall 2×2 contingency table of
+#   smoking (exposure) vs. 10-year CHD (outcome),
+#   and report corresponding RR, RD, and OR
+#   based on cohort-style risk calculations.
+#
+# Output:
+#   - Table 1: Contingency table (counts)
+#   - Table 2: Risk ratio (RR), risk difference (RD), odds ratio (OR)
+# -------------------------------------------------
+
+# --- 1. Construct 2×2 contingency table
 tab_overall <- table(dat1$smoke, dat1$chd)
 tab_overall
 
-# 风险、RR、RD、OR（基于计数，适合前瞻性队列）
-# epiR::epi.2by2 期望2x2矩阵，"Yes"对应阳性
+# Display the table nicely
+knitr::kable(
+  as.data.frame.matrix(tab_overall),
+  caption = "Table 1. Overall 2×2 contingency table: Smoking vs. 10-year CHD",
+  align = "c"
+)
 
+# --- 2. Estimate RR / RD / OR using epiR
 library(epiR)
 e_overall <- epiR::epi.2by2(tab_overall,
                             method = "cohort.count",
@@ -85,100 +100,227 @@ rr_overall <- e_overall$massoc.summary[e_overall$massoc.summary$var == "Inc risk
 or_overall <- e_overall$massoc.summary[e_overall$massoc.summary$var == "Inc odds ratio", c("est","lower","upper")]
 rd_overall <- e_overall$massoc.summary[e_overall$massoc.summary$var == "Attrib inc risk *", c("est","lower","upper")]
 
-print(rr_overall)
-print(rd_overall)
-print(or_overall)
+knitr::kable(rr_overall, caption = "Table 2a. Risk Ratio (RR)", digits = 3)
+knitr::kable(rd_overall, caption = "Table 2b. Risk Difference (RD)", digits = 3)
+knitr::kable(or_overall, caption = "Table 2c. Odds Ratio (OR)", digits = 3)
 
 ```
 
-```{r stratification:gender and age, include=TRUE}
+```{r stratification-gender-age, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# -------------------------------------------------
+# Chunk: stratification-gender-age
+# Goal:
+#   (1) Estimate stratum-specific Risk Ratios (RR)
+#       for smoking -> CHD by sex and by age group.
+#       These will later feed into forest plots.
+#
+#   (2) Compute Mantel–Haenszel (MH) common OR
+#       to assess confounding / consistency across strata.
+#
+# Output shown in report:
+#   - Table 3. Sex-stratified RR (smoking vs CHD)
+#   - Table 4. Age-stratified RR (smoking vs CHD)
+#   - Table 5. Mantel–Haenszel common ORs
+#
+# Notes:
+#   * RR (risk ratio) is what we care about biologically.
+#   * MH OR is used here to summarize across strata
+#     and to assess confounding (esp. age).
+# -------------------------------------------------
 
-# ======================
-# 2) 分层：按性别、年龄组
-# ======================
-
-# 2a) 按性别计算分层RR（以及森林图数据）
+# Helper: compute RR within each stratum
 calc_rr_by_stratum <- function(df, strata_var){
   df %>%
-    group_by(.data[[strata_var]]) %>%
-    group_modify(~{
+    dplyr::group_by(.data[[strata_var]]) %>%
+    dplyr::group_modify(~{
+      # 2x2 within this stratum
       tt <- table(.x$smoke, .x$chd)
-      e  <- epiR::epi.2by2(tt, method = "cohort.count", conf.level = 0.95,
-                           units = 100, outcome = "as.columns")
-       rr_row <- e$massoc.summary[e$massoc.summary$var == "Inc risk ratio",
-                                 c("est","lower","upper")]
 
-      tibble(
-        est = rr_row$est,
-        lower = rr_row$lower,
-        upper = rr_row$upper,
-        n   = nrow(.x)
+      # cohort.count gives risks and risk ratio
+      e  <- epiR::epi.2by2(
+        tt,
+        method     = "cohort.count",
+        conf.level = 0.95,
+        units      = 100,
+        outcome    = "as.columns"
+      )
+
+      # pull RR row
+      rr_row <- e$massoc.summary[
+        e$massoc.summary$var == "Inc risk ratio",
+        c("est", "lower", "upper")
+      ]
+
+      tibble::tibble(
+        est   = rr_row$est,
+        lcl   = rr_row$lower,
+        ucl   = rr_row$upper,
+        N_stratum = nrow(.x)
       )
     }) %>%
-    rename(stratum = !!strata_var)
+    dplyr::rename(Stratum = !!strata_var,
+                  RR = est,
+                  `95% LCL` = lcl,
+                  `95% UCL` = ucl)
 }
 
+# 1) Sex-stratified RR
 rr_by_sex <- calc_rr_by_stratum(dat1, "sex")
+
+# 2) Age-stratified RR
 rr_by_age <- calc_rr_by_stratum(dat1, "age_grp")
-rr_by_sex
-rr_by_age
 
-# 2) Mantel–Haenszel是分层版的卡方检验，体现控制混杂（如性别）的OR，不是RR
+# ---- Present tables for RR ----
+knitr::kable(
+  rr_by_sex,
+  digits = 3,
+  caption = "Table 3. Sex-stratified Risk Ratios (RR) for smoking and 10-year CHD"
+)
 
-# gender stratification. result: gender is not a confounder.
+knitr::kable(
+  rr_by_age,
+  digits = 3,
+  caption = "Table 4. Age-stratified Risk Ratios (RR) for smoking and 10-year CHD"
+)
+
+
+# ---- Mantel–Haenszel common ORs ----
+# Sex as stratifier
 tab_3d_sex <- xtabs(~ smoke + chd + sex, data = dat1)
-mh_sex <- mantelhaen.test(tab_3d_sex)  # common OR
-mh_sex
+mh_sex <- mantelhaen.test(tab_3d_sex)
 
-# age stratification. result: age is a confounder.
+# Age group as stratifier
 tab_3d_age <- xtabs(~ smoke + chd + age_grp, data = dat1)
 mh_age <- mantelhaen.test(tab_3d_age)
-mh_age
+
+mh_out <- tibble::tibble(
+  Strata      = c("Sex", "Age group"),
+  MH_common_OR = c(unname(mh_sex$estimate), unname(mh_age$estimate)),
+  p_value      = c(mh_sex$p.value,          mh_age$p.value)
+)
+
+knitr::kable(
+  mh_out,
+  digits = 3,
+  caption = "Table 5. Mantel–Haenszel common ORs (controlling for sex or age group)"
+)
+
 ```
 
-```{r evaluate confounding, include=TRUE}
-# ======================
-# 3) 混杂评估（以年龄为潜在混杂）
-# 粗略RR vs 分层合并，用log-binomial因为不收敛non-convergence，找不到最优模型而失败
-# 用Poisson代替（modified Poisson regression）
-# compare: logistic vs log-binomial vs poisson+robust 
-# ======================
+```{r evaluate-confounding, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# -------------------------------------------------
+# Chunk: evaluate-confounding
+# Goal:
+#   Assess confounding by comparing crude vs adjusted
+#   risk ratios (RR) for smoking → CHD.
+#
+# Methods:
+#   - Modified Poisson regression with robust SE (for RR)
+#   - Compare crude and age/diabetes/hypertension-adjusted models
+#   - Quantify % change to identify confounding
+#
+# Output shown in report:
+#   - Table 6. Crude and adjusted RR for smoking
+#   - Text summary of % change
+# -------------------------------------------------
 
-# 3a) 粗略 RR（用Poisson稳健近似风险比）
-library(sandwich); library(lmtest); library(broom)
+# --- 1) Libraries
+library(sandwich)
+library(lmtest)
+library(broom)
 
-fit_crude <- glm(as.numeric(chd) - 1 ~ smoke, family = poisson(link="log"), data = dat1)
+# --- 2) Crude RR (modified Poisson)
+fit_crude <- glm(as.numeric(chd) - 1 ~ smoke,
+                 family = poisson(link = "log"),
+                 data = dat1)
+
 vc_crude  <- sandwich::vcovHC(fit_crude, type = "HC0")
-crude_res <- lmtest::coeftest(fit_crude, vcov. = vc_crude) %>% broom::tidy() %>%
-  
-  mutate(RR = exp(estimate), lcl = exp(estimate - 1.96*std.error), ucl = exp(estimate + 1.96*std.error))
 
-crude_rr <- crude_res %>% filter(term=="smokeYes") %>% select(RR, lcl, ucl)
-crude_rr
+crude_res <- lmtest::coeftest(fit_crude, vcov. = vc_crude) %>%
+  broom::tidy() %>%
+  dplyr::mutate(
+    RR  = exp(estimate),
+    LCL = exp(estimate - 1.96 * std.error),
+    UCL = exp(estimate + 1.96 * std.error)
+  )
 
-# 3b) 调整年龄、糖尿病、高血压的RR（Poisson稳健）
-fit_adj <- glm(as.numeric(chd) - 1 ~ smoke + age_grp + diab + hyp, family = poisson(link="log"), data = dat1)
+crude_rr <- crude_res %>%
+  dplyr::filter(term == "smokeYes") %>%
+  dplyr::select(RR, LCL, UCL)
+
+
+# --- 3) Adjusted RR (for age group, diabetes, hypertension)
+fit_adj <- glm(as.numeric(chd) - 1 ~ smoke + age_grp + diab + hyp,
+               family = poisson(link = "log"),
+               data = dat1)
+
 vc_adj  <- sandwich::vcovHC(fit_adj, type = "HC0")
-adj_res <- lmtest::coeftest(fit_adj, vcov. = vc_adj) %>% broom::tidy() %>%
-  mutate(RR = exp(estimate), lcl = exp(estimate - 1.96*std.error), ucl = exp(estimate + 1.96*std.error))
 
-adj_rr <- adj_res %>% filter(term=="smokeYes") %>% select(RR, lcl, ucl)
-adj_rr
+adj_res <- lmtest::coeftest(fit_adj, vcov. = vc_adj) %>%
+  broom::tidy() %>%
+  dplyr::mutate(
+    RR  = exp(estimate),
+    LCL = exp(estimate - 1.96 * std.error),
+    UCL = exp(estimate + 1.96 * std.error)
+  )
 
-# 混杂相对变化（%）
-pct_change <- (adj_rr$RR - crude_rr$RR)/crude_rr$RR * 100
-pct_change 
+adj_rr <- adj_res %>%
+  dplyr::filter(term == "smokeYes") %>%
+  dplyr::select(RR, LCL, UCL)
 
-# 27.84% > 10% change compared to crude RR, strong confounding affect the relationship between exposure and outcome. 
+
+# --- 4) Percent change to assess confounding
+pct_change <- (adj_rr$RR - crude_rr$RR) / crude_rr$RR * 100
+
+
+# --- 5) Display nicely in report
+rr_compare <- dplyr::bind_rows(
+  tibble::tibble(Model = "Crude (unadjusted)", crude_rr),
+  tibble::tibble(Model = "Adjusted (age + diab + hyp)", adj_rr)
+)
+
+knitr::kable(
+  rr_compare,
+  digits = 3,
+  caption = "Table 6. Comparison of crude and adjusted risk ratios (RR) for smoking and 10-year CHD"
+)
+
+cat(sprintf(
+  "\n**Confounding assessment:** Adjusting for age, diabetes, and hypertension changed the RR by %.1f%%. ",
+  pct_change
+))
+
+if (abs(pct_change) > 10) {
+  cat("This exceeds the 10% threshold, indicating *substantial confounding* by these covariates.\n")
+} else {
+  cat("This is below the 10% threshold, suggesting minimal confounding.\n")
+}
 
 ```
 
-```{r interaction, include=TRUE}
-# ======================
-# 4) interaction：吸烟*性别（乘性 & 加性）
-# ======================
+```{r interaction-analysis, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# -------------------------------------------------
+# Chunk: interaction-analysis
+# Goal:
+#   Evaluate effect modification between smoking and sex
+#   on 10-year CHD risk:
+#     (a) Multiplicative interaction (Poisson regression + robust SE)
+#     (b) Additive interaction (RERI, AP, S)
+#
+# Output shown in report:
+#   - Table 7. Poisson model with multiplicative interaction (RRs)
+#   - Table 8. Additive interaction indices (RERI, AP, S)
+#   - Text interpretation of findings
+# -------------------------------------------------
 
-# 4a) 乘性交互（Poisson + robust SE）
+library(sandwich)
+library(lmtest)
+library(broom)
+library(stringr)
+library(dplyr)
+library(tidyr)
+
+# --- (a) Multiplicative interaction: Poisson + robust SE ---
 fit_int <- glm(
   as.numeric(chd) - 1 ~ smoke * sex + age_grp + diab + hyp,
   family = poisson(link = "log"),
@@ -186,24 +328,30 @@ fit_int <- glm(
 )
 
 vc_int  <- sandwich::vcovHC(fit_int, type = "HC0")
+
 int_res <- lmtest::coeftest(fit_int, vcov. = vc_int) %>%
   broom::tidy() %>%
-  mutate(
+  dplyr::mutate(
     RR  = exp(estimate),
-    lcl = exp(estimate - 1.96 * std.error),
-    ucl = exp(estimate + 1.96 * std.error)
+    LCL = exp(estimate - 1.96 * std.error),
+    UCL = exp(estimate + 1.96 * std.error)
   )
 
-# 把交互项（smokeYes:sexMale）提出来（有些版本会把顺序反过来成 sexMale:smokeYes，所以用 str_detect 两个都搜）
+# Extract the interaction term: smokeYes × sexMale
 int_interaction_term <- int_res %>%
-  dplyr::filter(stringr::str_detect(term, "smokeYes:sexMale|sexMale:smokeYes"))
+  dplyr::filter(stringr::str_detect(term, "smokeYes:sexMale|sexMale:smokeYes")) %>%
+  dplyr::select(term, RR, LCL, UCL, p.value)
 
-int_interaction_term
+knitr::kable(
+  int_interaction_term,
+  digits = 3,
+  caption = "Table 7. Multiplicative interaction between smoking and sex (from Poisson regression)"
+)
 
-# 4b) 加性交互（RERI / AP / S）
 
+# --- (b) Additive interaction: RERI / AP / S ---
 risk_cell <- dat1 %>%
-  dplyr::filter(!is.na(sex), !is.na(smoke), !is.na(chd)) %>%      # 关键：清掉 NA，避免多行
+  dplyr::filter(!is.na(sex), !is.na(smoke), !is.na(chd)) %>%
   dplyr::group_by(sex, smoke) %>%
   dplyr::summarise(
     n     = dplyr::n(),
@@ -211,59 +359,153 @@ risk_cell <- dat1 %>%
     risk  = cases / n,
     .groups = "drop"
   ) %>%
-  tidyr::unite(combo, sex, smoke, sep = "_") %>%                  # combo: Female_No, Female_Yes, ...
+  tidyr::unite(combo, sex, smoke, sep = "_") %>%
   dplyr::select(combo, risk) %>%
   tidyr::pivot_wider(names_from = combo, values_from = risk)
 
-# 现在 risk_cell 应该有且只有这4列
+# Ensure proper cells
 R00 <- as.numeric(risk_cell$Female_No)
 R10 <- as.numeric(risk_cell$Female_Yes)
 R01 <- as.numeric(risk_cell$Male_No)
 R11 <- as.numeric(risk_cell$Male_Yes)
 
-# 计算相加交互指标：）
-RERI <- R11 - R10 - R01 + R00              
-AP   <- RERI / R11                          
-S    <- (R11 - R00) / ((R10 - R00) + (R01 - R00))      
-#RERI（relative excess risk due to interaction -- RERI= RR11−RR10−RR01+1 两个暴露同时存在的风险比单独的风险之和多的部分
-#AP（attributable proportion due to interaction）-- AP = RERI/RR11 同时暴露的人群中，有多少比例的风险是交互造成的
-#S（synergy index） --S= RR11−1/((RR10−1)+(RR01−1)) 同时暴露效应是单独效应之和的多少倍
+# Compute additive interaction indices
+RERI <- R11 - R10 - R01 + R00
+AP   <- RERI / R11
+S    <- (R11 - R00) / ((R10 - R00) + (R01 - R00))
 
 add_int <- tibble::tibble(
-  metric = c("RERI", "AP", "S"),
-  value  = c(RERI,   AP,   S)
+  Metric = c("RERI (Relative Excess Risk due to Interaction)",
+             "AP (Attributable Proportion due to Interaction)",
+             "S (Synergy Index)"),
+  Value = c(RERI, AP, S)
 )
 
-add_int
+knitr::kable(
+  add_int,
+  digits = 3,
+  caption = "Table 8. Additive interaction between smoking and sex (RERI, AP, S)"
+)
+
+
+# --- (c) Interpretation ---
+cat("\n**Interpretation:**\n")
+
+cat(sprintf(
+  "• The multiplicative interaction term (smoking × sex) had RR = %.2f (95%% CI %.2f–%.2f). ",
+  int_interaction_term$RR, int_interaction_term$LCL, int_interaction_term$UCL
+))
+if (int_interaction_term$p.value < 0.05) {
+  cat("This suggests a statistically significant interaction on the multiplicative scale.\n")
+} else {
+  cat("This indicates no statistically significant interaction on the multiplicative scale.\n")
+}
+
+cat(sprintf(
+  "• On the additive scale, RERI = %.3f, AP = %.3f, S = %.3f. ",
+  RERI, AP, S
+))
+if (RERI > 0 & S > 1) {
+  cat("These positive values indicate that the joint effect of smoking and male sex on CHD exceeds the sum of their individual effects, consistent with a *positive additive interaction*.\n")
+} else {
+  cat("These results suggest little or no evidence of additive interaction.\n")
+}
+
 ```
 
-```{r descritive table, include=TRUE}
-# ======================
-# 5) 描述性表：按吸烟分组
-# ======================
+```{r descriptive-table, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# -------------------------------------------------
+# Chunk: descriptive-table
+# Goal:
+#   Create baseline descriptive statistics by smoking status.
+#   This is the "Table 1" of the study — demographics and clinical characteristics
+#   stratified by exposure (smoking).
+#
+# Output shown in report:
+#   - Table 1. Baseline characteristics by smoking status
+#
+# Methods:
+#   - Continuous vars summarized as mean (SD)
+#   - Categorical vars summarized as n (%)
+#   - p-values from appropriate tests (t-test / chi-squared)
+# -------------------------------------------------
+
 library(gtsummary)
+
 desc_tbl <- dat1 %>%
-  select(smoke, sex, age, age_grp, diab, hyp, sysBP, diaBP, totChol, glucose, BMI, cigsPerDay) %>%
-  tbl_summary(by = smoke,
-              type = list(age ~ "continuous", sysBP ~ "continuous", diaBP ~ "continuous",
-                          totChol ~ "continuous", glucose ~ "continuous", BMI ~ "continuous", cigsPerDay ~ "continuous"),
-              statistic = all_continuous() ~ "{mean} ({sd})",
-              missing = "ifany") %>%
-  add_p() %>%
-  modify_header(label ~ "**Variable**") %>%
-  bold_labels()
-desc_tbl
+  dplyr::select(smoke, sex, age, age_grp, diab, hyp, sysBP, diaBP,
+                totChol, glucose, BMI, cigsPerDay) %>%
+  gtsummary::tbl_summary(
+    by = smoke,
+    type = list(
+      age ~ "continuous",
+      sysBP ~ "continuous",
+      diaBP ~ "continuous",
+      totChol ~ "continuous",
+      glucose ~ "continuous",
+      BMI ~ "continuous",
+      cigsPerDay ~ "continuous"
+    ),
+    statistic = all_continuous() ~ "{mean} ({sd})",
+    missing = "ifany"
+  ) %>%
+  gtsummary::add_p() %>%                          # add p-values for comparison
+  gtsummary::modify_header(label ~ "**Variable**") %>%
+  gtsummary::bold_labels() %>%
+  gtsummary::modify_caption("**Table 9. Baseline characteristics by smoking status**")
+
+# Print as gt table (looks better in HTML/PDF)
+desc_tbl %>%
+  as_gt() %>%
+  gt::tab_options(
+    table.font.size = 11,
+    heading.align = "center",
+    table.align = "center",
+    data_row.padding = gt::px(2)
+  )
+
 ```
 
-```{r rr_tables, include=TRUE}
+```{r rr-tables, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+# -------------------------------------------------
+# Chunk: rr-tables
+# Goal:
+#   1. Create a clean analysis dataset (data_for_rr) with key variables:
+#      sex, age_grp, smoke, chd.
+#   2. Compute stratum-specific risk ratios (RR) for smoking → CHD
+#      within levels of sex and age_grp.
+#   3. Produce tables that can feed forest plots later.
+#
+# Output shown in report:
+#   - Table 10. Sex-specific RR (smoking vs CHD)
+#   - Table 11. Age-group-specific RR (smoking vs CHD)
+#
+# Methods:
+#   For each stratum:
+#     a = exposed=Yes & CHD=Yes
+#     b = exposed=Yes & CHD=No
+#     c = exposed=No  & CHD=Yes
+#     d = exposed=No  & CHD=No
+#
+#     Risk_exposed   = a / (a + b)
+#     Risk_unexposed = c / (c + d)
+#     RR             = Risk_exposed / Risk_unexposed
+#
+#     SE(logRR) = sqrt( 1/a - 1/(a+b) + 1/c - 1/(c+d) )
+#     95% CI    = exp( logRR ± 1.96 * SE(logRR) )
+# -------------------------------------------------
 
-# 我们先统一准备一个干净的数据集 data_for_rr, 确保这些列存在并且是我们期望的格式
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+# --- 1) Clean analysis dataset
 data_for_rr <- dat1 %>%
   dplyr::transmute(
-    sex    = sex,                        # Female / Male
-    age_grp = age_grp,                   # [0,45) etc.
-    smoke  = smoke,                      # No / Yes
-    chd    = chd                         # No / Yes
+    sex     = sex,      # Female / Male
+    age_grp = age_grp,  # e.g. [0,45), [45,60), [60,+)
+    smoke   = smoke,    # No / Yes
+    chd     = chd       # No / Yes
   ) %>%
   dplyr::filter(
     !is.na(sex),
@@ -272,55 +514,44 @@ data_for_rr <- dat1 %>%
     !is.na(chd)
   )
 
-
-# 性别分层：吸烟 vs CHD 的 RR
-library(dplyr)
-library(tidyr)
-
+# --- 2a) RR stratified by sex
 rr_by_sex <- data_for_rr %>%
-  # 统计每个 sex 分层内 smoke × chd 的 2×2 计数
+  # Count 2×2 cells within each sex
   count(sex, smoke, chd, name = "n") %>%
-  
-  # 变成宽格式：每个 sex 一行，四个格子变成四列
+  # Wide form: each sex becomes one row with 4 cells
   pivot_wider(
-    names_from = c(smoke, chd),
+    names_from  = c(smoke, chd),
     values_from = n
   ) %>%
-  
-  # 计算RR和95%CI（Wald近似）
+  # Compute RR and 95% CI
   mutate(
-    
-    a = Yes_Yes,  # a = 暴露=Yes & 结局=Yes
-    b = Yes_No,   # b = 暴露=Yes & 结局=No
-    c = No_Yes,   # c = 暴露=No  & 结局=Yes
-    d = No_No,   # d = 暴露=No  & 结局=No
+    # Cell definitions:
+    a = Yes_Yes,  # smokers with CHD
+    b = Yes_No,   # smokers without CHD
+    c = No_Yes,   # non-smokers with CHD
+    d = No_No,    # non-smokers without CHD
 
-    risk_exp   = a / (a + b),   # Risk in exposed (smokers)
-    risk_unexp = c / (c + d),   # Risk in unexposed (non-smokers)
-    RR         = risk_exp / risk_unexp,
+    risk_exp    = a / (a + b),
+    risk_unexp  = c / (c + d),
+    RR          = risk_exp / risk_unexp,
 
-    logRR    = log(RR),
-    SE_logRR = sqrt(1/a - 1/(a+b) + 1/c - 1/(c+d)),
-    lcl      = exp(logRR - 1.96 * SE_logRR),
-    ucl      = exp(logRR + 1.96 * SE_logRR)
+    logRR       = log(RR),
+    SE_logRR    = sqrt(1/a - 1/(a+b) + 1/c - 1/(c+d)),
+    LCL         = exp(logRR - 1.96 * SE_logRR),
+    UCL         = exp(logRR + 1.96 * SE_logRR)
   ) %>%
-  
-  # 保留画森林图需要的列
   select(
-    sex,
-    est = RR,
-    lcl,
-    ucl
+    Stratum = sex,
+    RR,
+    `95% LCL` = LCL,
+    `95% UCL` = UCL
   )
 
-rr_by_sex
-
-
-# 年龄分层：吸烟 vs CHD 的 RR
+# --- 2b) RR stratified by age group
 rr_by_age <- data_for_rr %>%
   count(age_grp, smoke, chd, name = "n") %>%
   pivot_wider(
-    names_from = c(smoke, chd),
+    names_from  = c(smoke, chd),
     values_from = n
   ) %>%
   mutate(
@@ -329,35 +560,60 @@ rr_by_age <- data_for_rr %>%
     c = No_Yes,
     d = No_No,
 
-    risk_exp   = a / (a + b),
-    risk_unexp = c / (c + d),
-    RR         = risk_exp / risk_unexp,
+    risk_exp    = a / (a + b),
+    risk_unexp  = c / (c + d),
+    RR          = risk_exp / risk_unexp,
 
-    logRR    = log(RR),
-    SE_logRR = sqrt(1/a - 1/(a+b) + 1/c - 1/(c+d)),
-    lcl      = exp(logRR - 1.96 * SE_logRR),
-    ucl      = exp(logRR + 1.96 * SE_logRR)
+    logRR       = log(RR),
+    SE_logRR    = sqrt(1/a - 1/(a+b) + 1/c - 1/(c+d)),
+    LCL         = exp(logRR - 1.96 * SE_logRR),
+    UCL         = exp(logRR + 1.96 * SE_logRR)
   ) %>%
   select(
-    age_grp,
-    est = RR,
-    lcl,
-    ucl
+    Stratum = age_grp,
+    RR,
+    `95% LCL` = LCL,
+    `95% UCL` = UCL
   )
 
-rr_by_age
+# --- 3) Present both tables nicely in the report
+kable(
+  rr_by_sex,
+  digits  = 3,
+  caption = "Table 10. Sex-specific risk ratios (RR) for smoking and 10-year CHD"
+)
+
+kable(
+  rr_by_age,
+  digits  = 3,
+  caption = "Table 11. Age-specific risk ratios (RR) for smoking and 10-year CHD"
+)
+
 
 ```
 
-```{r visualisation_and_output, include=TRUE}
-# ======================
-# 6) 可视化
-# ======================
+```{r figures-smoking-chd, echo=FALSE, message=FALSE, warning=FALSE, fig.align="center", results='asis'}
+# -------------------------------------------------
+# Chunk: figures-smoking-chd
+# Goal:
+#   Create publication-style figures for:
+#     Figure 1. 10-year CHD risk by smoking status
+#     Figure 2. Sex-specific RR for smoking → CHD
+#     Figure 3. Age-specific RR for smoking → CHD
+#
+# Also:
+#   Save high-resolution PNGs with timestamped filenames
+#   into a stable output directory.
+# -------------------------------------------------
 
 library(ggplot2)
 library(dplyr)
+library(scales)
 
-# 6a) 吸烟 vs 10年CHD 风险条形图 
+# -------------------------------------------------
+# Figure 1. Absolute risk of CHD by smoking status
+# -------------------------------------------------
+
 plot_dat <- dat1 %>%
   dplyr::group_by(smoke) %>%
   dplyr::summarise(
@@ -365,133 +621,227 @@ plot_dat <- dat1 %>%
     .groups = "drop"
   )
 
-# 给柱子上方留空间，但不超过 1
-ymax <- min(1, max(plot_dat$risk) + 0.02)
+ymax <- min(1, max(plot_dat$risk) + 0.02)  # for nicer label spacing on bars
 
 p1 <- ggplot(plot_dat, aes(x = smoke, y = risk)) +
-  geom_col() +
+  geom_col(width = 0.6) +
   geom_text(
     aes(label = scales::percent(risk, accuracy = 0.1)),
-    vjust = -0.3
+    vjust = -0.4,
+    size = 4
   ) +
   labs(
-    title = "10-year CHD Risk by Smoking",
+    title = "Figure 1. 10-year CHD Risk by Smoking Status",
     x = NULL,
-    y = "Risk (Incidence Proportion)"
+    y = "Risk (incidence proportion)"
   ) +
-  ylim(0, ymax)
+  ylim(0, ymax) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title.y = element_text(face = "bold")
+  )
 
-p1
+p1 %>%
+  print()
 
-# 6b) 性别分层 RR 森林图
-p2 <- ggplot(rr_by_sex, aes(x = sex, y = est)) +
+
+# -------------------------------------------------
+# Figure 2. Forest plot of RR by sex
+# -------------------------------------------------
+
+# NOTE: use log10 scale for RR axis if you like; here we stay linear for clarity in a teaching context
+p2 <- ggplot(rr_by_sex, aes(y = Stratum %||% sex, x = RR)) +
   geom_point(size = 3) +
-  geom_errorbar(aes(ymin = lcl, ymax = ucl), width = 0.1) +
-  geom_hline(yintercept = 1, linetype = 2) +
+  geom_errorbarh(aes(xmin = `95% LCL` %||% lcl,
+                     xmax = `95% UCL` %||% ucl),
+                 height = 0.15,
+                 linewidth = 0.8) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
   labs(
-    title = "Stratum-specific RR (Smoking → CHD) by Sex",
-    x = "Sex",
-    y = "Risk Ratio (95% CI)"
+    title = "Figure 2. Sex-specific Risk Ratio (Smoking → CHD)",
+    x = "Risk Ratio (95% CI)",
+    y = "Sex"
   ) +
-  coord_flip()
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title.x = element_text(face = "bold")
+  )
 
-p2
+p2 %>%
+  print()
 
-# 6c) 年龄分层 RR 森林图
-p3 <- ggplot(rr_by_age, aes(x = age_grp, y = est)) +
+
+# -------------------------------------------------
+# Figure 3. Forest plot of RR by age group
+# -------------------------------------------------
+
+p3 <- ggplot(rr_by_age, aes(y = Stratum %||% age_grp, x = RR)) +
   geom_point(size = 3) +
-  geom_errorbar(aes(ymin = lcl, ymax = ucl), width = 0.1) +
-  geom_hline(yintercept = 1, linetype = 2) +
+  geom_errorbarh(aes(xmin = `95% LCL` %||% lcl,
+                     xmax = `95% UCL` %||% ucl),
+                 height = 0.15,
+                 linewidth = 0.8) +
+  geom_vline(xintercept = 1, linetype = "dashed") +
   labs(
-    title = "Stratum-specific RR (Smoking → CHD) by Age Group",
-    x = "Age Group",
-    y = "Risk Ratio (95% CI)"
+    title = "Figure 3. Age-specific Risk Ratio (Smoking → CHD)",
+    x = "Risk Ratio (95% CI)",
+    y = "Age group"
   ) +
-  coord_flip()
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    axis.title.x = element_text(face = "bold")
+  )
 
-p3
+p3 %>%
+  print()
 
-#保存输出
-output_dir <- file.path("..", "output", "plots_1_cohort study")
+
+# -------------------------------------------------
+# Export high-res figures
+# -------------------------------------------------
+
+output_dir <- file.path("..", "output", "plots_1_cohort_study")
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
 timestamp <- format(Sys.time(), "%Y%m%d_%H%M")
 
-ggsave(file.path(output_dir, paste0("plot_risk_by_smoke",timestamp,".png")),    p1, width = 6, height = 4, dpi = 300)
-ggsave(file.path(output_dir, paste0("plot_forest_rr_by_sex",timestamp,".png")), p2, width = 6, height = 4, dpi = 300)
-ggsave(file.path(output_dir, paste0("plot_forest_rr_by_age",timestamp,".png")), p3, width = 6, height = 4, dpi = 300)
+ggplot2::ggsave(
+  filename = file.path(output_dir, paste0("figure1_chd_risk_by_smoke_", timestamp, ".png")),
+  plot     = p1,
+  width    = 6,
+  height   = 4,
+  dpi      = 300
+)
 
+ggplot2::ggsave(
+  filename = file.path(output_dir, paste0("figure2_rr_by_sex_", timestamp, ".png")),
+  plot     = p2,
+  width    = 6,
+  height   = 4,
+  dpi      = 300
+)
 
-#output_dir <- file.path("..", "output", paste0("run_", format(Sys.time(), "%Y-%m-%d_%H%M")))
-#dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+ggplot2::ggsave(
+  filename = file.path(output_dir, paste0("figure3_rr_by_age_", timestamp, ".png")),
+  plot     = p3,
+  width    = 6,
+  height   = 4,
+  dpi      = 300
+)
 
-#ggsave(file.path(output_dir, "plot_risk_by_smoke.png"),    p1, width = 6, height = 4, dpi = 300)
-#ggsave(file.path(output_dir, "plot_forest_rr_by_sex.png"), p2, width = 6, height = 4, dpi = 300)
-#ggsave(file.path(output_dir, "plot_forest_rr_by_age.png"), p3, width = 6, height = 4, dpi = 300)
+cat("Figures saved to: ", normalizePath(output_dir), "\n")
+
 
 ```
 
-```{r final result output, include=TRUE}
-# ======================
-# 7) 导出关键结果
-# ======================
-output_dir <- file.path("..","output", "final_result_1_cohort_study")
-dir.create(output_dir, showWarnings = FALSE)
+```{r export-final-results, echo=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+# -------------------------------------------------
+# Chunk: export-final-results
+# Goal:
+#   Export all key analysis outputs (tables, models, interaction metrics)
+#   to a timestamped reproducibility folder.
+#
+# This chunk is hidden in the final report (include=FALSE)
+# but it WILL run and WILL write files to disk.
+#
+# Files exported:
+#   - rr_by_sex_<timestamp>.csv
+#   - rr_by_age_<timestamp>.csv
+#   - tab_overall_smoke_chd_<timestamp>.csv
+#   - confounding_evaluation_<timestamp>.csv
+#   - reg_crude_poisson_rb_<timestamp>.csv
+#   - reg_adj_poisson_rb_<timestamp>.csv
+#   - reg_poisson_interaction_<timestamp>.csv
+#   - additive_interaction_<timestamp>.csv
+#
+# Also prints a short summary of core estimates.
+# -------------------------------------------------
+
+library(readr)
+library(dplyr)
+library(tibble)
+
+# 1. Set up export directory and timestamp
+output_dir <- file.path("..", "output", "final_result_1_cohort_study")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
 timestamp <- format(Sys.time(), "%Y%m%d_%H%M")
 
 
-# 1. 性别分层 RR
-readr::write_csv(rr_by_sex,
+# 2. Export RR by sex (stratified)
+readr::write_csv(
+  rr_by_sex,
   file.path(output_dir, paste0("rr_by_sex_", timestamp, ".csv"))
 )
 
-# 2. 年龄分层 RR
-readr::write_csv(rr_by_age,
+# 3. Export RR by age group (stratified)
+readr::write_csv(
+  rr_by_age,
   file.path(output_dir, paste0("rr_by_age_", timestamp, ".csv"))
 )
 
-# 3. 总体 2×2 表
+# 4. Export overall 2×2 table (smoking × CHD)
 readr::write_csv(
   as.data.frame.matrix(tab_overall),
   file.path(output_dir, paste0("tab_overall_smoke_chd_", timestamp, ".csv"))
 )
 
-# 4. MH analysis confounding evaluation
 
+# 5. Export Mantel–Haenszel summary (confounding / stratified OR)
 mh_out <- tibble(
-  strata = c("sex","age_grp"),
+  strata = c("sex", "age_grp"),
   MH_common_OR = c(unname(mh_sex$estimate), unname(mh_age$estimate)),
-  p_value = c(mh_sex$p.value, mh_age$p.value)
+  p_value      = c(mh_sex$p.value,          mh_age$p.value)
 )
-readr::write_csv(mh_out, file.path(output_dir, paste0("confounding_evalutation", timestamp, ".csv")))
+
+readr::write_csv(
+  mh_out,
+  file.path(output_dir, paste0("confounding_evaluation_", timestamp, ".csv"))
+)
 
 
-
-# 5. multiple interaction and Additive interaction evaluation
-# 粗模型（Crude Poisson robust）
+# 6. Export Poisson regression models
+#   (crude model, adjusted model, interaction model)
 readr::write_csv(
   crude_res %>% mutate(measure = "Crude Poisson robust (RR approx)"),
   file.path(output_dir, paste0("reg_crude_poisson_rb_", timestamp, ".csv"))
 )
 
-# 调整模型（Adjusted Poisson robust）
 readr::write_csv(
   adj_res %>% mutate(measure = "Adj Poisson robust (RR approx)"),
   file.path(output_dir, paste0("reg_adj_poisson_rb_", timestamp, ".csv"))
 )
 
-# 含交互项模型（Poisson robust with interaction）
-readr::write_csv(int_res %>% mutate(measure = "Poisson robust with interaction"),
-  file.path(output_dir, paste0("reg_poisson_interaction_", timestamp, ".csv")))
+readr::write_csv(
+  int_res %>% mutate(measure = "Poisson robust with interaction"),
+  file.path(output_dir, paste0("reg_poisson_interaction_", timestamp, ".csv"))
+)
 
-# additive
-readr::write_csv(add_int, file.path(output_dir, paste0("additive_interaction_evaluation", timestamp, ".csv")))
 
-cat("✅ 回归结果已导出到：", normalizePath(output_dir), "\n")
+# 7. Export additive interaction metrics (RERI / AP / S)
+readr::write_csv(
+  add_int,
+  file.path(output_dir, paste0("additive_interaction_", timestamp, ".csv"))
+)
 
-# 简短控制台汇总
-cat("\n=== Overall RR (epi.2by2) ===\n"); print(rr_overall)
-cat("\n=== Age-adjusted (Poisson robust) RR for smoke ===\n"); print(adj_rr)
+
+# 8. Console summary for sanity check
+cat("✅ 导出完成。所有结果已保存到目录:\n", normalizePath(output_dir), "\n")
+
+cat("\n=== Overall RR (epi.2by2) ===\n")
+print(rr_overall)
+
+cat("\n=== Age-adjusted (Poisson robust) RR for smoke ===\n")
+print(adj_rr)
+
 cat(sprintf("\nConfounding %% change (Adj vs Crude RR): %.1f%%\n", pct_change))
-cat("\n=== Additive interaction (Sex x Smoke) ===\n"); print(add_int)
-cat('\n文件与图已导出到 ./outputs/ 目录。\n')
+
+cat("\n=== Additive interaction (Smoking × Sex; RERI / AP / S) ===\n")
+print(add_int)
+
+cat("\n文件和图像（Figures 1–3）已写入输出目录。\n")
+
 ```
