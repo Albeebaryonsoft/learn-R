@@ -17,4 +17,4 @@ dpois(30, lambda = 50)
 # P(X≥10)=1−P(X≤9)
 1-ppois(9, lambda = 3)
 
-#test
+#test test 
