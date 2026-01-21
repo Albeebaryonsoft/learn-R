@@ -1,14 +1,9 @@
 
-
-# 加载数据包 
-install.packages("readr")       # 如果没装过就运行这行
+install.packages("readr")      
 library(readr)
 
-# 读取你刚才下载的 csv 文件
-df <- read_csv("data/simulated_clinical_trial_data.csv") 
-#使用的是相对路径，便于切换设备读取，遇到过文件拖拽的问题
 
-# 查看数据前几行
+df <- read_csv("data/simulated_clinical_trial_data.csv") 
 head(df)
 
 

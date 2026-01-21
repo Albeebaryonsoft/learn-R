@@ -1,19 +1,14 @@
   
-  # —— 1：安装必要的包（首次运行才需要）——
-  #install.packages("readr")   # 高效读取 CSV 文件
-  #install.packages("dplyr")   # 数据清洗、变换、筛选必备
-  # test 
-  
-  # —— 2：加载包（每次运行前都要）——
-  library(readr)     # 用于读取CSV文件
-  library(dplyr)     # 提供管道语法和数据操作函数
+
+  library(readr)     
+  library(dplyr)     
   
   df_raw <- read_csv("data/dirty_phase2_mcl_simulated_data.csv")
-  df <- df_raw # 这份可以随便清洗、操作
+  df <- df_raw 
   
   head(df_raw)
   head(df)
-  
+
   # -- 3：识别问题数据 —— 
   str(df)           # 查看数据类型（int, factor, character）
   summary(df)       # 查看变量的分布、缺失值等信息
